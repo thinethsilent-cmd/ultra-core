@@ -40,16 +40,12 @@
             })()
         };
 
-        // MANDATORY RULE 3: Auth before queries
-        // Fixed: Added try-catch and specific fallback for custom token mismatch
         const initAuth = async () => {
             try {
                 if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
                     try {
                         await signInWithCustomToken(auth, __initial_auth_token);
-                        console.log("Custom token auth successful");
                     } catch (tokenError) {
-                        console.warn("Custom token failed, falling back to anonymous", tokenError);
                         await signInAnonymously(auth);
                     }
                 } else {
@@ -65,12 +61,7 @@
         
         onAuthStateChanged(auth, (u) => {
             window.state.user = u;
-            if (u) {
-                window.state.authReady = true;
-                console.log("Authenticated as:", u.uid);
-            } else {
-                window.state.authReady = false;
-            }
+            window.state.authReady = !!u;
         });
 
         window.copyToClipboard = (text) => {
@@ -88,17 +79,17 @@
         };
 
         window.handleLogin = async () => {
-            // Guard: Must be authenticated first
             if (!window.state.user) {
                 showToast("Establishing Secure Connection...", false);
                 await initAuth();
                 if (!window.state.user) return showToast("Network Error", true);
             }
 
-            const key = document.getElementById('license-key-input').value.trim();
+            const key = document.getElementById('license-key-input').value.trim().toUpperCase();
             const btn = document.getElementById('login-btn');
             
-            if (key === "THINETHHUTTO") {
+            // Fixed: Added MAMA as an admin key
+            if (key === "HUTTO" || key === "MAMA") {
                 window.state.isAdmin = true;
                 showToast("Admin Session Verified");
                 showView('admin-view');
@@ -112,8 +103,7 @@
             btn.innerText = "VERIFYING HWID...";
 
             try {
-                // RULE 1: Strict Paths
-                const keyRef = doc(db, 'artifacts', appId, 'public', 'data', 'licenses', key.toUpperCase());
+                const keyRef = doc(db, 'artifacts', appId, 'public', 'data', 'licenses', key);
                 const keySnap = await getDoc(keyRef);
 
                 if (keySnap.exists()) {
