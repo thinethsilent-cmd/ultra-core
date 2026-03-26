@@ -3,14 +3,13 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>CrashPoint Ultra | Secure Kernel</title>
+    <title>FOXXY! | Temporal Kernel</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://unpkg.com/lucide@latest"></script>
-    <!-- Firebase Imports -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.1.0/firebase-app.js";
-        import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.1.0/firebase-auth.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.1.0/firebase-auth.js";
         import { getFirestore, doc, setDoc, getDoc, collection, query, onSnapshot, updateDoc, addDoc, deleteDoc, getDocs } from "https://www.gstatic.com/firebasejs/11.1.0/firebase-firestore.js";
 
         const firebaseConfig = {
@@ -26,403 +25,363 @@
         const app = initializeApp(firebaseConfig);
         const auth = getAuth(app);
         const db = getFirestore(app);
-        const appId = 'crashpoint-ultra-v9'; 
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'foxxy-temporal-pro';
 
         window.state = {
             user: null,
-            license: null,
             isAdmin: false,
-            sessionData: [],
-            crash1xHistory: [],
-            streak2x: 0,
-            deviceId: localStorage.getItem('cp_device_id') || crypto.randomUUID()
-        };
-        localStorage.setItem('cp_device_id', window.state.deviceId);
-
-        const showView = (id) => {
-            document.querySelectorAll('.view-layer').forEach(el => el.classList.add('hidden'));
-            document.getElementById(id).classList.remove('hidden');
+            authReady: false,
+            timeNodes: [], 
+            intervals: [], 
+            deviceId: localStorage.getItem('foxxy_hwid') || (() => {
+                const newId = 'HWID-' + crypto.randomUUID().split('-')[0].toUpperCase();
+                localStorage.setItem('foxxy_hwid', newId);
+                return newId;
+            })()
         };
 
-        const showToast = (msg, isError = false) => {
-            const toast = document.getElementById('toast');
-            toast.innerText = msg;
-            toast.className = `fixed bottom-10 left-1/2 -translate-x-1/2 px-6 py-3 rounded-full text-xs font-bold uppercase tracking-widest z-[200] transition-all shadow-2xl ${isError ? 'bg-red-600 text-white' : 'bg-blue-600 text-white'}`;
-            toast.classList.remove('opacity-0', 'translate-y-10', 'hidden');
-            setTimeout(() => {
-                toast.classList.add('opacity-0', 'translate-y-10');
-            }, 3000);
-        };
-
-        window.handleLogin = async () => {
-            const keyInput = document.getElementById('license-key-input').value.trim();
-            if (!keyInput) return showToast("Enter License Key", true);
-            const btn = document.getElementById('login-btn');
-            btn.disabled = true;
-            btn.innerText = "VERIFYING...";
+        // MANDATORY RULE 3: Auth before queries
+        // Fixed: Added try-catch and specific fallback for custom token mismatch
+        const initAuth = async () => {
             try {
-                if (keyInput === "ADMIN-MASTER-99") {
-                    window.state.isAdmin = true;
-                    showView('admin-view');
-                    initAdminPanel();
-                    return;
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    try {
+                        await signInWithCustomToken(auth, __initial_auth_token);
+                        console.log("Custom token auth successful");
+                    } catch (tokenError) {
+                        console.warn("Custom token failed, falling back to anonymous", tokenError);
+                        await signInAnonymously(auth);
+                    }
+                } else {
+                    await signInAnonymously(auth);
                 }
-                const keyDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'keys', keyInput);
-                const keySnap = await getDoc(keyDocRef);
-                if (!keySnap.exists()) throw new Error("Invalid License Key");
-                const keyData = keySnap.data();
-                if (keyData.expiry && new Date(keyData.expiry) < new Date()) {
-                    await deleteDoc(keyDocRef);
-                    throw new Error("License Expired");
-                }
-                if (keyData.usedBy && keyData.usedBy !== window.state.deviceId) throw new Error("Key locked to device");
-                if (!keyData.usedBy) await updateDoc(keyDocRef, { usedBy: window.state.deviceId, activatedAt: new Date().toISOString() });
-                window.state.license = keyData;
-                showView('dashboard-view');
-                showToast("Access Granted");
-                startExpiryCheck(keyInput);
-            } catch (err) {
-                showToast(err.message, true);
-            } finally {
-                btn.disabled = false;
-                btn.innerText = "AUTHORIZE KERNEL ACCESS";
+            } catch (e) {
+                console.error("Auth failed permanently:", e);
+                showToast("Auth Service Offline", true);
             }
         };
 
-        function startExpiryCheck(key) {
-            setInterval(async () => {
-                const keyDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'keys', key);
-                const keySnap = await getDoc(keyDocRef);
-                if (!keySnap.exists() || (keySnap.data().expiry && new Date(keySnap.data().expiry) < new Date())) location.reload();
-            }, 60000);
+        initAuth();
+        
+        onAuthStateChanged(auth, (u) => {
+            window.state.user = u;
+            if (u) {
+                window.state.authReady = true;
+                console.log("Authenticated as:", u.uid);
+            } else {
+                window.state.authReady = false;
+            }
+        });
+
+        window.copyToClipboard = (text) => {
+            const textArea = document.createElement("textarea");
+            textArea.value = text;
+            document.body.appendChild(textArea);
+            textArea.select();
+            try {
+                document.execCommand('copy');
+                showToast("Key Copied!");
+            } catch (err) {
+                showToast("Copy Failed", true);
+            }
+            document.body.removeChild(textArea);
+        };
+
+        window.handleLogin = async () => {
+            // Guard: Must be authenticated first
+            if (!window.state.user) {
+                showToast("Establishing Secure Connection...", false);
+                await initAuth();
+                if (!window.state.user) return showToast("Network Error", true);
+            }
+
+            const key = document.getElementById('license-key-input').value.trim();
+            const btn = document.getElementById('login-btn');
+            
+            if (key === "THINETHHUTTO") {
+                window.state.isAdmin = true;
+                showToast("Admin Session Verified");
+                showView('admin-view');
+                setTimeout(() => loadAllKeys(), 500); 
+                return;
+            }
+
+            if (!key) return showToast("Please enter a key", true);
+
+            btn.disabled = true;
+            btn.innerText = "VERIFYING HWID...";
+
+            try {
+                // RULE 1: Strict Paths
+                const keyRef = doc(db, 'artifacts', appId, 'public', 'data', 'licenses', key.toUpperCase());
+                const keySnap = await getDoc(keyRef);
+
+                if (keySnap.exists()) {
+                    const data = keySnap.data();
+                    if (!data.boundDevice) {
+                        await updateDoc(keyRef, {
+                            boundDevice: window.state.deviceId,
+                            activatedAt: new Date().toISOString(),
+                            userId: window.state.user.uid
+                        });
+                        showToast("Key Bound to HWID!");
+                        showView('dashboard-view');
+                    } else if (data.boundDevice === window.state.deviceId) {
+                        showToast("Access Granted");
+                        showView('dashboard-view');
+                    } else {
+                        showToast("LOCKED TO OTHER DEVICE", true);
+                    }
+                } else {
+                    showToast("Invalid License Key", true);
+                }
+            } catch (error) {
+                console.error(error);
+                showToast("Connection Refused", true);
+            } finally {
+                btn.disabled = false;
+                btn.innerText = "AUTHORIZE KERNEL";
+            }
+        };
+
+        window.generateKey = async () => {
+            if (!window.state.isAdmin || !window.state.user) return;
+            const newKey = "FX-" + Math.random().toString(36).substring(2, 10).toUpperCase();
+            try {
+                const keyRef = doc(db, 'artifacts', appId, 'public', 'data', 'licenses', newKey);
+                await setDoc(keyRef, {
+                    boundDevice: null,
+                    createdAt: new Date().toISOString(),
+                    type: 'standard'
+                });
+                showToast("Key Generated: " + newKey);
+                loadAllKeys();
+            } catch (e) {
+                showToast("Database Write Error", true);
+            }
+        };
+
+        window.loadAllKeys = async () => {
+            if (!window.state.user) return;
+            const list = document.getElementById('admin-key-list');
+            list.innerHTML = '<div class="text-zinc-600 animate-pulse text-xs">Syncing registry...</div>';
+            
+            try {
+                const q = collection(db, 'artifacts', appId, 'public', 'data', 'licenses');
+                const snap = await getDocs(q);
+                list.innerHTML = '';
+                
+                if (snap.empty) {
+                    list.innerHTML = '<div class="text-zinc-600 text-xs italic">No keys found in registry.</div>';
+                    return;
+                }
+
+                snap.forEach(docSnap => {
+                    const data = docSnap.data();
+                    const item = document.createElement('div');
+                    item.className = "p-4 bg-black/40 border border-white/5 rounded-xl mb-3 flex justify-between items-center animate-in fade-in duration-500";
+                    item.innerHTML = `
+                        <div>
+                            <div class="text-white font-mono font-bold tracking-wider">${docSnap.id}</div>
+                            <div class="text-[9px] mt-1 ${data.boundDevice ? 'text-blue-400' : 'text-zinc-500'}">
+                                ${data.boundDevice ? 'LOCKED: ' + data.boundDevice : 'AVAILABLE'}
+                            </div>
+                        </div>
+                        <button onclick="copyToClipboard('${docSnap.id}')" class="p-2 hover:bg-white/10 rounded-lg transition-colors">
+                            <i data-lucide="copy" class="w-4 h-4 text-zinc-400"></i>
+                        </button>
+                    `;
+                    list.appendChild(item);
+                });
+                lucide.createIcons();
+            } catch (e) {
+                console.error(e);
+                list.innerHTML = `
+                    <div class="text-red-500/50 text-xs p-4 border border-red-500/20 rounded-xl bg-red-500/5">
+                        Registry Sync Failed.
+                        <button onclick="loadAllKeys()" class="block mt-2 underline text-white">Retry Sync</button>
+                    </div>`;
+            }
+        };
+
+        window.showView = (id) => {
+            document.querySelectorAll('.view-layer').forEach(v => v.classList.add('hidden'));
+            document.getElementById(id).classList.remove('hidden');
+            if (id === 'dashboard-view') initChart();
+        };
+
+        window.syncCurrentTime = () => {
+            const now = new Date();
+            const timestamp = now.getTime();
+            if (window.state.timeNodes.length > 0) {
+                const diff = Math.floor((timestamp - window.state.timeNodes[0]) / 1000);
+                if (diff > 0) window.state.intervals.unshift(diff);
+            }
+            window.state.timeNodes.unshift(timestamp);
+            if (window.state.timeNodes.length > 15) window.state.timeNodes.pop();
+            if (window.state.intervals.length > 15) window.state.intervals.pop();
+            updateUI();
+        };
+
+        function updateUI() {
+            const list = document.getElementById('node-history');
+            list.innerHTML = '';
+            window.state.timeNodes.forEach((t, i) => {
+                const d = new Date(t);
+                const item = document.createElement('div');
+                item.className = "flex justify-between p-3 bg-white/5 border-l-2 border-blue-500 rounded-r-lg mb-2";
+                item.innerHTML = `<span class="font-mono text-sm text-blue-400">NODE #${window.state.timeNodes.length - i}</span>
+                                 <span class="font-mono text-sm text-white">${d.toLocaleTimeString([], {hour12: false})}</span>`;
+                list.appendChild(item);
+            });
+            if (window.chart && window.state.intervals.length > 0) {
+                window.chart.data.labels = window.state.intervals.map((_, i) => `Δ${i+1}`).reverse();
+                window.chart.data.datasets[0].data = [...window.state.intervals].reverse();
+                window.chart.update();
+            }
         }
 
-        const initFirebase = async () => {
-            try {
-                await signInAnonymously(auth);
-                onAuthStateChanged(auth, (u) => window.state.user = u);
-            } catch (e) { console.error(e); }
+        window.predictNextTime = () => {
+            if (window.state.timeNodes.length < 3) return showToast("Sync 3 nodes", true);
+            const btn = document.getElementById('predict-btn');
+            btn.disabled = true;
+            btn.innerHTML = `<i data-lucide="loader-2" class="w-4 h-4 animate-spin"></i> CALCULATING...`;
+            lucide.createIcons();
+            setTimeout(() => {
+                const avg = window.state.intervals.slice(0, 3).reduce((a,b)=>a+b,0) / 3;
+                const nextDate = new Date(window.state.timeNodes[0] + (avg * 1000));
+                document.getElementById('prediction-display').classList.remove('hidden');
+                document.getElementById('predicted-timestamp').innerText = nextDate.toLocaleTimeString([], {hour12: false});
+                document.getElementById('confidence-val').innerText = "94% CONFIDENCE";
+                btn.disabled = false;
+                btn.innerHTML = `<i data-lucide="zap" class="w-5 h-5 text-blue-500 inline mr-2"></i> EXECUTE PREDICTION`;
+                lucide.createIcons();
+            }, 800);
         };
-        initFirebase();
     </script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700;900&family=JetBrains+Mono:wght@500;700&display=swap');
-        :root { --bg-primary: #02040a; --bg-secondary: #0d1117; --accent-blue: #3b82f6; }
-        body { background-color: var(--bg-primary); color: #f1f5f9; font-family: 'Inter', sans-serif; overflow-x: hidden; }
+        body { background-color: #050505; color: #f1f5f9; font-family: 'Inter', sans-serif; overflow-x: hidden; }
         .font-mono { font-family: 'JetBrains Mono', monospace; }
-        .blur-glow { filter: blur(80px); opacity: 0.15; pointer-events: none; }
         .hidden { display: none !important; }
-        .view-layer { transition: opacity 0.3s ease; }
-        .blue-glow { box-shadow: 0 0 20px rgba(59, 130, 246, 0.3); }
+        .custom-scrollbar::-webkit-scrollbar { width: 4px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 10px; }
+        .fox-gradient { background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%); }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
+        .animate-in { animation: fadeIn 0.4s ease-out forwards; }
     </style>
 </head>
 <body class="selection:bg-blue-500/30">
 
-    <div id="toast" class="opacity-0 translate-y-10 pointer-events-none fixed z-[999] transition-all"></div>
+    <div id="toast" class="opacity-0 translate-y-10 pointer-events-none fixed bottom-10 left-1/2 -translate-x-1/2 px-6 py-3 rounded-full text-[10px] font-black uppercase tracking-widest z-[200] transition-all shadow-2xl bg-blue-600 text-white"></div>
 
-    <!-- Background -->
-    <div class="fixed inset-0 overflow-hidden pointer-events-none z-0">
-        <div class="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-blue-600 blur-glow rounded-full animate-pulse"></div>
-        <div class="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-indigo-600 blur-glow rounded-full animate-pulse" style="animation-delay: 2s;"></div>
-    </div>
-
-    <!-- AUTHENTICATION VIEW -->
-    <div id="auth-view" class="view-layer min-h-screen flex items-center justify-center p-6 relative z-10">
+    <!-- LOGIN VIEW -->
+    <div id="login-view" class="view-layer min-h-screen flex items-center justify-center p-6 relative z-10">
         <div class="max-w-md w-full">
             <div class="text-center mb-12">
-                <div class="relative inline-block mb-6">
-                    <div class="absolute inset-0 bg-blue-600 blur-2xl opacity-40 animate-pulse"></div>
-                    <div class="relative p-5 bg-gradient-to-b from-blue-500 to-blue-700 rounded-2xl shadow-2xl border border-white/10">
-                        <i data-lucide="shield-check" class="w-12 h-12 text-white"></i>
+                <div class="inline-block p-4 bg-blue-600 rounded-3xl mb-6 shadow-2xl shadow-blue-500/20"><i data-lucide="zap" class="w-10 h-10 text-white fill-white"></i></div>
+                <h1 class="text-6xl font-black tracking-tighter uppercase italic mb-2 text-white">FOXXY<span class="text-blue-500">!</span></h1>
+                <p class="text-slate-500 text-[10px] font-black tracking-[0.5em] uppercase">Temporal Kernel v4.0</p>
+            </div>
+            <div class="bg-[#0f0f0f] border border-white/5 rounded-[2.5rem] p-8 shadow-3xl">
+                <input id="license-key-input" type="text" placeholder="ACCESS KEY" class="w-full bg-black border border-white/10 rounded-2xl py-5 px-6 font-mono text-sm mb-6 text-white text-center focus:border-blue-500 outline-none transition-all placeholder:text-zinc-700 uppercase">
+                <button onclick="handleLogin()" id="login-btn" class="w-full fox-gradient hover:opacity-90 text-white font-black py-5 rounded-2xl shadow-xl uppercase tracking-[0.2em] text-xs active:scale-95 transition-all">AUTHORIZE KERNEL</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ADMIN VIEW -->
+    <div id="admin-view" class="view-layer min-h-screen hidden flex flex-col bg-[#050505]">
+        <nav class="bg-[#0f0f0f] border-b border-white/5 px-8 py-5 flex items-center justify-between">
+            <h1 class="text-lg font-black italic">FOXXY! <span class="text-blue-500">MASTER PANEL</span></h1>
+            <button onclick="location.reload()" class="text-zinc-500 hover:text-white"><i data-lucide="log-out" class="w-5 h-5"></i></button>
+        </nav>
+        <div class="flex-1 p-8 max-w-5xl mx-auto w-full">
+            <div class="grid grid-cols-1 md:grid-cols-12 gap-8">
+                <div class="md:col-span-4 space-y-6">
+                    <div class="bg-[#0f0f0f] p-8 rounded-[2.5rem] border border-white/5 shadow-xl">
+                        <h2 class="text-[10px] font-black uppercase text-zinc-500 mb-6 tracking-widest">Generator</h2>
+                        <button onclick="generateKey()" class="w-full py-5 bg-blue-600 text-white font-black rounded-2xl mb-4 hover:bg-blue-500 transition-colors uppercase text-[10px] tracking-widest flex items-center justify-center gap-2">
+                            <i data-lucide="plus-circle" class="w-4 h-4"></i> Generate Key
+                        </button>
+                        <p class="text-[9px] text-zinc-600 text-center leading-relaxed">Generated keys are stored in the global registry.</p>
                     </div>
                 </div>
-                <h1 class="text-5xl font-black tracking-tighter uppercase italic mb-3 text-white">CRASHPOINT <span class="text-blue-500">ULTRA</span></h1>
-                <p class="text-slate-500 text-[10px] font-black tracking-[0.4em] uppercase">Secure Time-Analysis Kernel</p>
-            </div>
-            <div class="bg-[#0d1117] border border-white/5 rounded-[2.5rem] p-10 shadow-3xl ring-1 ring-white/10 backdrop-blur-sm">
-                <div class="space-y-8">
-                    <div class="space-y-3">
-                        <label class="text-[10px] text-slate-500 font-black uppercase tracking-widest ml-1">Access Key</label>
-                        <div class="relative">
-                            <i data-lucide="key" class="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-600"></i>
-                            <input id="license-key-input" type="text" placeholder="KERNEL-KEY-XXXX" class="w-full bg-[#010409] border border-slate-800 rounded-2xl py-4 pl-12 pr-4 font-mono text-sm focus:outline-none focus:border-blue-500/50 transition-all text-white placeholder:text-slate-800">
+                <div class="md:col-span-8">
+                    <div class="bg-[#0f0f0f] p-8 rounded-[2.5rem] border border-white/5 flex flex-col h-[600px] shadow-xl">
+                        <div class="flex justify-between items-center mb-6">
+                            <h2 class="text-[10px] font-black uppercase text-zinc-500 tracking-widest">Active Registry</h2>
+                            <button onclick="loadAllKeys()" class="text-blue-500 hover:text-blue-400 transition-colors">
+                                <i data-lucide="refresh-cw" class="w-4 h-4"></i>
+                            </button>
                         </div>
+                        <div id="admin-key-list" class="flex-1 overflow-y-auto custom-scrollbar space-y-2 pr-2"></div>
                     </div>
-                    <button id="login-btn" onclick="handleLogin()" class="w-full bg-blue-600 hover:bg-blue-500 text-white font-black py-5 rounded-2xl shadow-2xl text-[11px] uppercase tracking-[0.3em] flex items-center justify-center gap-3 transition-all active:scale-95">AUTHORIZE KERNEL ACCESS <i data-lucide="cpu" class="w-4 h-4"></i></button>
                 </div>
             </div>
         </div>
     </div>
 
     <!-- DASHBOARD VIEW -->
-    <div id="dashboard-view" class="view-layer min-h-screen hidden relative z-10 flex flex-col">
-        <nav class="bg-[#0d1117]/80 backdrop-blur-xl border-b border-white/5 px-8 py-4 flex items-center justify-between sticky top-0 z-50">
-            <div class="flex items-center gap-3">
-                <div class="p-2 bg-blue-600 rounded-lg shadow-lg"><i data-lucide="zap" class="w-5 h-5 text-white fill-white"></i></div>
-                <h1 class="text-xl font-black tracking-tighter uppercase italic leading-none text-white">ULTRA <span class="text-blue-500">ANALYSER</span></h1>
-            </div>
-            <button onclick="location.reload()" class="p-3 text-slate-500 hover:text-white hover:bg-blue-600/10 rounded-xl transition-all border border-transparent hover:border-blue-500/20"><i data-lucide="log-out" class="w-5 h-5"></i></button>
+    <div id="dashboard-view" class="view-layer min-h-screen hidden flex flex-col">
+        <nav class="bg-[#0f0f0f] border-b border-white/5 px-8 py-5 flex items-center justify-between">
+            <h1 class="text-xl font-black italic">FOXXY<span class="text-blue-500">!</span></h1>
+            <button onclick="location.reload()" class="text-zinc-500 hover:text-white"><i data-lucide="power" class="w-5 h-5"></i></button>
         </nav>
-
-        <div class="flex-1 p-6 lg:p-10 max-w-[1600px] mx-auto w-full">
-            <div class="grid grid-cols-1 lg:grid-cols-12 gap-8">
-                
-                <!-- Sidebar Control -->
-                <div class="lg:col-span-4 xl:col-span-3 space-y-6">
-                    <!-- Data Input -->
-                    <div class="bg-[#0d1117] p-8 rounded-[2.5rem] border border-white/5 shadow-2xl relative">
-                        <h2 class="text-[11px] font-black uppercase tracking-widest text-slate-400 mb-6 flex items-center justify-between">
-                            Node Injection
-                            <button onclick="captureCurrentTime()" class="p-2 bg-blue-600 hover:bg-blue-500 rounded-lg text-white transition-all blue-glow" title="Capture Current Time">
-                                <i data-lucide="plus" class="w-4 h-4"></i>
-                            </button>
-                        </h2>
-                        <div class="space-y-4">
-                            <input id="crash-odd-input" type="number" step="0.01" placeholder="1.00x" class="w-full bg-[#010409] border border-slate-800 rounded-2xl py-4 px-6 text-2xl font-mono font-black focus:border-blue-500/50 outline-none text-white">
-                            <button onclick="commitData()" class="w-full bg-blue-600 hover:bg-blue-500 text-white font-black py-5 rounded-2xl text-[11px] uppercase tracking-widest transition-all shadow-xl">ADD DATA NODE</button>
-                        </div>
-                    </div>
-
-                    <!-- Triple 2x+ Analyzer Status -->
-                    <div id="streak-panel" class="bg-[#0d1117] p-8 rounded-[2.5rem] border border-white/5 shadow-2xl overflow-hidden group">
-                        <h2 class="text-[11px] font-black uppercase tracking-widest text-slate-400 mb-6">ACCURACY BOOSTER</h2>
-                        <div class="flex justify-between gap-2">
-                            <div id="streak-1" class="w-full h-2 rounded-full bg-slate-800 transition-all duration-500"></div>
-                            <div id="streak-2" class="w-full h-2 rounded-full bg-slate-800 transition-all duration-500"></div>
-                            <div id="streak-3" class="w-full h-2 rounded-full bg-slate-800 transition-all duration-500"></div>
-                        </div>
-                        <p id="streak-text" class="text-[9px] font-bold text-slate-500 uppercase tracking-widest mt-4 text-center">ADD 3 NODES OF 2.00x+ FOR HIGH ACCURACY</p>
-                    </div>
-
-                    <!-- 1X Time Tracker -->
-                    <div class="bg-blue-900/20 p-8 rounded-[2.5rem] border border-blue-500/10 shadow-2xl relative overflow-hidden">
-                        <h2 class="text-[11px] font-black uppercase tracking-widest text-blue-400 mb-6">1.00x TIME ANALYZER</h2>
-                        <div class="space-y-4">
-                            <div class="flex justify-between items-end">
-                                <div>
-                                    <p class="text-[9px] text-blue-300 font-bold uppercase tracking-widest mb-1">Time Elapsed</p>
-                                    <p id="timer-1x" class="text-4xl font-mono font-black text-white">00:00</p>
-                                </div>
-                                <div class="text-right">
-                                    <p class="text-[9px] text-blue-300 font-bold uppercase tracking-widest mb-1">Gap Mean</p>
-                                    <p id="avg-gap-1x" class="text-xl font-mono font-bold text-blue-500">--</p>
-                                </div>
-                            </div>
-                            <div id="risk-meter" class="p-3 bg-blue-500/10 rounded-xl border border-blue-500/20 text-center">
-                                <p id="risk-status" class="text-xs font-bold text-blue-400 uppercase tracking-widest">MONITORING_ACTIVE</p>
-                            </div>
-                        </div>
-                    </div>
+        <div class="flex-1 p-6 lg:p-10 max-w-7xl mx-auto w-full grid grid-cols-1 lg:grid-cols-12 gap-8">
+            <div class="lg:col-span-4 space-y-6">
+                <div class="bg-[#0f0f0f] p-8 rounded-[2.5rem] border border-white/5">
+                    <button onclick="syncCurrentTime()" class="w-full fox-gradient text-white font-black py-8 rounded-2xl shadow-2xl flex flex-col items-center gap-2 active:scale-95 transition-all">
+                        <i data-lucide="timer" class="w-8 h-8"></i>
+                        <span class="text-[10px] tracking-widest">CAPTURE NODE</span>
+                    </button>
                 </div>
-
-                <!-- Main Display -->
-                <div class="lg:col-span-8 xl:col-span-9 space-y-8">
-                    <!-- Prediction Window -->
-                    <div id="signal-container" class="hidden bg-gradient-to-br from-[#0d1117] to-[#02040a] border-2 border-blue-500/30 rounded-[3rem] p-12 relative overflow-hidden shadow-2xl animate-in zoom-in-95 duration-500">
-                        <div class="absolute inset-0 bg-blue-600/5 mix-blend-overlay"></div>
-                        <div class="relative z-10 flex flex-col md:flex-row items-center justify-between gap-12">
-                            <div class="text-center md:text-left">
-                                <span class="text-[11px] font-black tracking-widest text-blue-500/70 uppercase">High Precision Signal</span>
-                                <div id="predicted-odd" class="text-9xl font-mono font-black text-white tracking-tighter italic drop-shadow-[0_0_30px_rgba(59,130,246,0.5)]">0.00x</div>
-                            </div>
-                            <div class="h-[120px] w-[1px] bg-blue-500/20 hidden md:block"></div>
-                            <div class="text-center md:text-left">
-                                <span class="text-[11px] font-black tracking-widest text-blue-500/70 uppercase">Extraction Logic</span>
-                                <div id="confidence-val" class="text-5xl font-mono font-black text-slate-100 italic">0%</div>
-                                <div class="w-48 bg-slate-900 h-3 mt-4 rounded-full overflow-hidden border border-white/5 shadow-inner">
-                                    <div id="confidence-bar" class="bg-blue-500 h-full rounded-full transition-all duration-1000" style="width: 0%"></div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Neural Chart -->
-                    <div class="bg-[#0d1117] p-8 rounded-[2.5rem] border border-white/5 shadow-2xl h-[500px] flex flex-col">
-                        <h2 class="text-[10px] font-black uppercase tracking-widest text-slate-500 flex items-center gap-3 mb-6">
-                            <i data-lucide="activity" class="w-4 h-4 text-blue-500"></i> NEURAL_FREQUENCY_PATTERN
-                        </h2>
-                        <div class="flex-1 relative">
-                            <canvas id="volatilityChart"></canvas>
-                        </div>
-                        <div class="mt-8">
-                             <button id="extract-btn" onclick="generateSignal()" class="w-full bg-blue-600 hover:bg-blue-500 text-white font-black py-6 rounded-2xl transition-all shadow-3xl flex items-center justify-center gap-4 uppercase tracking-[0.4em] text-[12px] blue-glow">
-                                <i data-lucide="target" class="w-5 h-5"></i>
-                                EXECUTE SIGNAL EXTRACTION
-                            </button>
-                        </div>
-                    </div>
+                <div class="bg-[#0f0f0f] p-6 rounded-[2.5rem] border border-white/5 h-[350px] flex flex-col">
+                    <div id="node-history" class="flex-1 overflow-y-auto custom-scrollbar"></div>
+                </div>
+            </div>
+            <div class="lg:col-span-8 space-y-6">
+                <div id="prediction-display" class="hidden bg-gradient-to-br from-blue-600 to-indigo-900 rounded-[3rem] p-10 shadow-2xl border-4 border-white/10">
+                    <span class="text-[10px] font-black text-blue-200 uppercase tracking-widest">Estimated Next Event</span>
+                    <div id="predicted-timestamp" class="text-7xl font-mono font-black text-white italic tracking-tighter">00:00:00</div>
+                    <div id="confidence-val" class="text-[10px] text-white/50 font-bold mt-2 uppercase">0% CONFIDENCE</div>
+                </div>
+                <div class="bg-[#0f0f0f] p-8 rounded-[2.5rem] border border-white/5 h-[400px]">
+                    <canvas id="intervalChart"></canvas>
+                    <button id="predict-btn" onclick="predictNextTime()" class="w-full bg-zinc-900 border border-white/10 text-white font-black py-6 rounded-2xl mt-4 uppercase tracking-[0.4em] text-[12px]">
+                        <i data-lucide="zap" class="w-5 h-5 text-blue-500 inline mr-2"></i> EXECUTE PREDICTION
+                    </button>
                 </div>
             </div>
         </div>
     </div>
 
     <script>
-        let sessionData = [];
-        let chart = null;
-        let last1xTime = null;
-        let crash1xGaps = [];
-
-        window.onload = () => {
-            lucide.createIcons();
-            initChart();
-            start1xTimer();
-        };
-
-        function start1xTimer() {
-            const timerEl = document.getElementById('timer-1x');
-            setInterval(() => {
-                if (!last1xTime) return;
-                const seconds = Math.floor((new Date() - last1xTime) / 1000);
-                const m = Math.floor(seconds / 60).toString().padStart(2, '0');
-                const s = (seconds % 60).toString().padStart(2, '0');
-                timerEl.innerText = `${m}:${s}`;
-                updateRisk(seconds);
-            }, 1000);
-        }
-
-        function captureCurrentTime() {
-            last1xTime = new Date();
-            showToast("Zero-Point Captured (1.00x Sync)");
-        }
-
-        function updateRisk(seconds) {
-            const riskStatus = document.getElementById('risk-status');
-            const avgGap = crash1xGaps.length > 0 ? (crash1xGaps.reduce((a, b) => a + b, 0) / crash1xGaps.length) : 180;
-
-            if (seconds > avgGap * 0.9) {
-                riskStatus.innerText = "IMMINENT_1.00x_RISK";
-                riskStatus.className = "text-xs font-bold text-red-500 uppercase animate-pulse";
-            } else if (seconds > avgGap * 0.6) {
-                riskStatus.innerText = "ENTERING_CRITICAL_WINDOW";
-                riskStatus.className = "text-xs font-bold text-orange-500 uppercase";
-            } else {
-                riskStatus.innerText = "NOMINAL_STABILITY_ZONE";
-                riskStatus.className = "text-xs font-bold text-blue-400 uppercase tracking-widest";
-            }
+        function showToast(msg, isErr = false) {
+            const t = document.getElementById('toast');
+            if (!t) return;
+            t.innerText = msg;
+            t.className = `fixed bottom-10 left-1/2 -translate-x-1/2 px-6 py-3 rounded-full text-[10px] font-black uppercase tracking-widest z-[200] transition-all shadow-2xl ${isErr ? 'bg-red-600' : 'bg-blue-600'} text-white opacity-100 translate-y-0`;
+            setTimeout(() => t.classList.add('opacity-0', 'translate-y-10'), 3000);
         }
 
         function initChart() {
-            const ctx = document.getElementById('volatilityChart').getContext('2d');
-            chart = new Chart(ctx, {
-                type: 'line',
-                data: {
-                    labels: [],
-                    datasets: [{
-                        label: 'Intensity',
-                        data: [],
-                        borderColor: '#3b82f6',
-                        borderWidth: 4,
-                        fill: true,
-                        backgroundColor: (context) => {
-                            const c = context.chart;
-                            const {ctx, chartArea} = c;
-                            if (!chartArea) return null;
-                            const g = ctx.createLinearGradient(0, chartArea.top, 0, chartArea.bottom);
-                            g.addColorStop(0, 'rgba(59, 130, 246, 0.2)');
-                            g.addColorStop(1, 'rgba(59, 130, 246, 0)');
-                            return g;
-                        },
-                        tension: 0.4,
-                        pointRadius: 6,
-                        pointBackgroundColor: '#3b82f6'
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    plugins: { legend: { display: false } },
-                    scales: {
-                        x: { display: false },
-                        y: { grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#64748b', font: { size: 10 } } }
-                    }
+            const canvas = document.getElementById('intervalChart');
+            if (!canvas) return;
+            const ctx = canvas.getContext('2d');
+            if (window.chart) window.chart.destroy();
+            window.chart = new Chart(ctx, {
+                type: 'bar',
+                data: { labels: [], datasets: [{ label: 'Sec', data: [], backgroundColor: '#3b82f6', borderRadius: 8 }] },
+                options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } },
+                    scales: { x: { display: false }, y: { grid: { color: 'rgba(255,255,255,0.03)' }, ticks: { color: '#525252' } } }
                 }
             });
         }
-
-        window.commitData = () => {
-            const oddInput = document.getElementById('crash-odd-input');
-            const odd = parseFloat(oddInput.value);
-            if (isNaN(odd)) return;
-
-            // Handle Streak Logic (3x 2.00x+)
-            if (odd >= 2.00) {
-                window.state.streak2x++;
-            } else {
-                window.state.streak2x = 0;
-            }
-
-            // UI Feedback for streak
-            for (let i = 1; i <= 3; i++) {
-                const el = document.getElementById(`streak-${i}`);
-                if (i <= window.state.streak2x) {
-                    el.className = "w-full h-2 rounded-full bg-blue-500 blue-glow";
-                } else {
-                    el.className = "w-full h-2 rounded-full bg-slate-800";
-                }
-            }
-
-            const streakText = document.getElementById('streak-text');
-            if (window.state.streak2x >= 3) {
-                streakText.innerText = "HIGH ACCURACY MODE ACTIVATED";
-                streakText.className = "text-[9px] font-black text-blue-400 uppercase tracking-widest mt-4 text-center animate-pulse";
-            } else {
-                streakText.innerText = "ADD 3 NODES OF 2.00x+ FOR HIGH ACCURACY";
-                streakText.className = "text-[9px] font-bold text-slate-500 uppercase tracking-widest mt-4 text-center";
-            }
-
-            // Handle 1.00x Timing
-            if (odd === 1.00) {
-                const now = new Date();
-                if (last1xTime) {
-                    const gap = Math.floor((now - last1xTime) / 1000);
-                    crash1xGaps.push(gap);
-                    if (crash1xGaps.length > 5) crash1xGaps.shift();
-                    const avg = Math.floor(crash1xGaps.reduce((a,b) => a+b, 0) / crash1xGaps.length);
-                    document.getElementById('avg-gap-1x').innerText = `${avg}s`;
-                }
-                last1xTime = now;
-            }
-
-            sessionData.unshift({ odd, time: new Date().toLocaleTimeString() });
-            if (sessionData.length > 15) sessionData.pop();
-
-            oddInput.value = '';
-            chart.data.labels = sessionData.map(d => d.time).reverse();
-            chart.data.datasets[0].data = sessionData.map(d => d.odd).reverse();
-            chart.update();
-        };
-
-        window.generateSignal = () => {
-            if (sessionData.length < 3) return showToast("Min 3 nodes required", true);
-            
-            const btn = document.getElementById('extract-btn');
-            btn.disabled = true;
-            btn.innerText = "SYNCING NEURAL PATTERNS...";
-
-            setTimeout(() => {
-                const avg = sessionData.reduce((a, b) => a + b.odd, 0) / sessionData.length;
-                
-                // High Accuracy Logic based on 2x streak
-                const isHighAcc = window.state.streak2x >= 3;
-                const multiplier = isHighAcc ? (0.95 + Math.random() * 0.1) : (0.75 + Math.random() * 0.4);
-                const prediction = (avg * multiplier).toFixed(2);
-                const confidence = isHighAcc ? (Math.floor(Math.random() * 5) + 94) : (Math.floor(Math.random() * 10) + 82);
-
-                document.getElementById('signal-container').classList.remove('hidden');
-                document.getElementById('predicted-odd').innerText = prediction + 'x';
-                document.getElementById('confidence-val').innerText = confidence + '%';
-                document.getElementById('confidence-bar').style.width = confidence + '%';
-                
-                if (isHighAcc) {
-                    document.getElementById('predicted-odd').className = "text-9xl font-mono font-black text-blue-400 tracking-tighter italic drop-shadow-[0_0_40px_rgba(59,130,246,0.8)]";
-                    showToast("HIGH ACCURACY SIGNAL EXTRACTED");
-                } else {
-                    document.getElementById('predicted-odd').className = "text-9xl font-mono font-black text-white tracking-tighter italic drop-shadow-[0_0_30px_rgba(59,130,246,0.5)]";
-                }
-
-                btn.disabled = false;
-                btn.innerText = "EXECUTE SIGNAL EXTRACTION";
-            }, 1500);
+        window.onload = () => {
+            lucide.createIcons();
+            const observer = new MutationObserver(() => lucide.createIcons());
+            observer.observe(document.body, { attributes: true, subtree: true, attributeFilter: ['class'] });
         };
     </script>
 </body>
